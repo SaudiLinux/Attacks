@@ -1,0 +1,11 @@
+{
+    "target": "http://example.com",
+    "discovered_paths": [
+        "http://example.com/"
+    ],
+    "cdn_analysis": {},
+    "vulnerable_endpoints": [],
+    "source_maps": [],
+    "unprotected_apis": [],
+    "matomo_analysis": null
+}

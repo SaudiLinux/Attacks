@@ -217,40 +217,165 @@ class Attack:
         except Exception as e:
             print(f"{Fore.RED}[-] Error analyzing Matomo: {str(e)}{Style.RESET_ALL}")
 
+    def analyze_xml(self, url):
+        try:
+            response = requests.get(url)
+            if response.status_code == 200 and 'xml' in response.headers.get('content-type', '').lower():
+                # تحليل المستند XML باستخدام BeautifulSoup
+                soup = BeautifulSoup(response.text, 'lxml-xml')
+                
+                xml_analysis = {
+                    'urls': set(),
+                    'text_elements': [],
+                    'numeric_elements': [],
+                    'structure': []
+                }
+                
+                # استخراج جميع الروابط
+                for tag in soup.find_all():
+                    for attr in ['href', 'src', 'url', 'link']:
+                        url = tag.get(attr)
+                        if url:
+                            full_url = urljoin(self.target_url, url)
+                            xml_analysis['urls'].add(full_url)
+                
+                # استخراج العناصر النصية والرقمية
+                for tag in soup.find_all():
+                    if tag.string and tag.string.strip():
+                        try:
+                            # محاولة تحويل إلى رقم
+                            float(tag.string.strip())
+                            xml_analysis['numeric_elements'].append({
+                                'tag': tag.name,
+                                'value': tag.string.strip(),
+                                'path': self._get_xml_path(tag)
+                            })
+                        except ValueError:
+                            # إذا فشل التحويل، فهو نص
+                            xml_analysis['text_elements'].append({
+                                'tag': tag.name,
+                                'value': tag.string.strip(),
+                                'path': self._get_xml_path(tag)
+                            })
+                
+                # بناء هيكل المستند
+                xml_analysis['structure'] = self._build_xml_structure(soup)
+                
+                # طباعة النتائج
+                print(f"\n{Fore.CYAN}[*] XML Analysis Results for {url}{Style.RESET_ALL}")
+                
+                print(f"\n{Fore.GREEN}[+] URLs Found:{Style.RESET_ALL}")
+                for url in xml_analysis['urls']:
+                    print(f"    {Fore.BLUE}→{Style.RESET_ALL} {url}")
+                
+                print(f"\n{Fore.GREEN}[+] Text Elements:{Style.RESET_ALL}")
+                for elem in xml_analysis['text_elements']:
+                    print(f"    {Fore.YELLOW}→{Style.RESET_ALL} {elem['tag']} ({elem['path']}): {elem['value']}")
+                
+                print(f"\n{Fore.GREEN}[+] Numeric Elements:{Style.RESET_ALL}")
+                for elem in xml_analysis['numeric_elements']:
+                    print(f"    {Fore.YELLOW}→{Style.RESET_ALL} {elem['tag']} ({elem['path']}): {elem['value']}")
+                
+                print(f"\n{Fore.GREEN}[+] Document Structure:{Style.RESET_ALL}")
+                self._print_xml_structure(xml_analysis['structure'])
+                
+                # حفظ النتائج
+                self.results['xml_analysis'] = {
+                    'url': url,
+                    'urls': list(xml_analysis['urls']),
+                    'text_elements': xml_analysis['text_elements'],
+                    'numeric_elements': xml_analysis['numeric_elements'],
+                    'structure': xml_analysis['structure']
+                }
+                
+                return True
+            return False
+        except Exception as e:
+            print(f"{Fore.RED}[-] Error analyzing XML: {str(e)}{Style.RESET_ALL}")
+            return False
+    
+    def _get_xml_path(self, tag):
+        """الحصول على المسار الكامل للعنصر XML"""
+        path = []
+        parent = tag
+        while parent:
+            if parent.name:
+                path.append(parent.name)
+            parent = parent.parent
+        return '/'.join(reversed(path))
+    
+    def _build_xml_structure(self, element, level=0):
+        """بناء هيكل مستند XML بشكل تسلسلي"""
+        structure = {
+            'name': element.name if element.name else 'root',
+            'attributes': element.attrs if element.attrs else {},
+            'children': []
+        }
+        
+        for child in element.children:
+            if child.name:
+                structure['children'].append(
+                    self._build_xml_structure(child, level + 1)
+                )
+        
+        return structure
+    
+    def _print_xml_structure(self, structure, level=0):
+        """طباعة هيكل XML بشكل جميل"""
+        indent = '    ' * level
+        print(f"{indent}{Fore.CYAN}→{Style.RESET_ALL} {structure['name']}")
+        
+        if structure['attributes']:
+            for key, value in structure['attributes'].items():
+                print(f"{indent}  {Fore.YELLOW}└{Style.RESET_ALL} @{key} = {value}")
+        
+        for child in structure['children']:
+            self._print_xml_structure(child, level + 1)
+
     def crawl_smart(self, max_depth=3):
         visited = set()
         to_visit = [(self.target_url, 0)]
-        
+
         while to_visit:
             url, depth = to_visit.pop(0)
-            if depth > max_depth or url in visited:
+            if url in visited or depth > max_depth:
                 continue
-                
+
             visited.add(url)
             try:
                 response = requests.get(url)
+                content_type = response.headers.get('content-type', '').lower()
+
+                # تحليل المستندات XML
+                if 'xml' in content_type:
+                    print(f"\n{Fore.CYAN}[*] Found XML document at {url}{Style.RESET_ALL}")
+                    self.analyze_xml(url)
+
+                # تحليل JavaScript
+                if 'javascript' in content_type or url.endswith('.js'):
+                    print(f"\n{Fore.CYAN}[*] Found JavaScript at {url}{Style.RESET_ALL}")
+                    self.analyze_js(url)
+                    self.find_source_maps(response.text, url)
+                    if 'matomo' in url.lower():
+                        self.analyze_matomo(url)
+
+                # البحث عن روابط جديدة
                 soup = BeautifulSoup(response.text, 'html.parser')
-                
-                # Find all links
                 for link in soup.find_all(['a', 'script', 'link']):
-                    href = link.get('href') or link.get('src')
-                    if href:
-                        full_url = urljoin(url, href)
-                        if urlparse(full_url).netloc == urlparse(self.target_url).netloc:
-                            to_visit.append((full_url, depth + 1))
-                            self.discovered_paths.add(full_url)
-                            
-                            # Check for JavaScript files
-                            if full_url.endswith('.js'):
-                                self.find_source_maps(response.text, full_url)
-                                if 'matomo' in full_url.lower():
-                                    self.analyze_matomo(full_url)
-                            
-                            # Security checks
-                            self.check_xss_csrf(full_url)
-                            
+                    new_url = link.get('href') or link.get('src')
+                    if new_url:
+                        new_url = urljoin(url, new_url)
+                        if new_url.startswith(('http://', 'https://')):
+                            if urlparse(new_url).netloc == urlparse(self.target_url).netloc:
+                                to_visit.append((new_url, depth + 1))
+                                self.discovered_paths.add(new_url)
+                                
+                                # فحوصات الأمان
+                                self.check_xss_csrf(new_url)
+
             except Exception as e:
                 print(f"{Fore.RED}[-] Error crawling {url}: {str(e)}{Style.RESET_ALL}")
+                continue
 
     def export_results(self):
         self.results['discovered_paths'] = list(self.discovered_paths)
@@ -281,3 +406,24 @@ if __name__ == "__main__":
     
     attack = Attack(args.url)
     attack.run()
+
+
+def main():
+    parser = argparse.ArgumentParser(description='أداة تحليل أمني للمواقع')
+    parser.add_argument('url', help='عنوان URL المستهدف')
+    parser.add_argument('--xml', help='مسار ملف XML للتحليل')
+    args = parser.parse_args()
+
+    analyzer = SecurityAnalyzer(args.url)
+    
+    if args.xml:
+        print(f"\n{Fore.CYAN}[*] تحليل ملف XML: {args.xml}{Style.RESET_ALL}")
+        analyzer.analyze_xml(args.xml)
+    else:
+        print(f"\n{Fore.CYAN}[*] بدء التحليل الذكي للموقع: {args.url}{Style.RESET_ALL}")
+        analyzer.crawl_smart()
+        analyzer.analyze_cdn()
+        analyzer.export_results()
+
+if __name__ == '__main__':
+    main()
